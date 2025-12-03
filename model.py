@@ -64,23 +64,12 @@ class ResNet50(ResNet):
     def __init__(self, n_class=10):
         super(ResNet50, self).__init__(n_class, n_blocks=[3, 4, 6, 3])
 
-# モデル初期化
-model = ResNet50(n_class=10).to(device)
 
-# Optimizer & Scheduler 設定
-criterion = nn.CrossEntropyLoss()
-
-
-optimizer = optim.AdamW(
-    model.parameters(),
-    lr=hyperparameters["learning_rate"],   # 0.001
-    weight_decay=hyperparameters["weight_decay"] # 0.01
-)  # <--- ここに閉じカッコが必要です！
-
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs) # Scheduler追加
-
-# W&Bにモデルの構造を記録 (Optional)
-wandb.watch(model, log="all")
-
-
+# --- ヘルパー関数 (これがあると便利) ---
+def get_model(device):
+    """
+    他のファイルから呼び出すための関数
+    """
+    model = ResNet50(n_class=10)
+    return model.to(device)
 
