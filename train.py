@@ -10,30 +10,33 @@ import time
 import wandb
 import os
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from model import get_model
 
+# model.py からモデル定義関数を読み込む
+# ※ 同じフォルダに model.py がある前提です
+from model import get_model 
+
+# --- 1. 設定とハイパーパラメータ ---
 hyperparameters = {
     "project_name": "clasification of cifar-10 by ResNet50",
-    "experiment_name": "ResNet50_Stem_TrivialAug_AdamW_50ep_TTA_ramdomerasing", # 実験名
-    "note": "AdamW (lr=0.001, wd=1e-2). Modified Stem + TrivialAugment.no mixup and add TTA,ramdomerasing.", # 施策メモ
+    "experiment_name": "ResNet50_Stem_TrivialAug_AdamW_50ep_TTA_RE", 
+    "note": "AdamW (lr=0.001, wd=1e-2). Modified Stem + TrivialAugment + RandomErasing. No Mixup.",
     "architecture": "ResNet50_CIFAR_Optimized",
     "dataset": "CIFAR-10",
-    "epochs": 50,              # 動作確認のため少なめに設定しています。
+    "epochs": 50,
     "batch_size": 128,
     "learning_rate": 0.001,
-    "weight_decay": 1e-2,      # AdamW用に変更
+    "weight_decay": 1e-2,
     "momentum": 0.9,
     "optimizer": "AdamW",
-    "scheduler": "CosineAnnealingLR", # 学習率スケジューラを追加
+    "scheduler": "CosineAnnealingLR",
     "seed": 42,
-    "resize": 32,              # CIFAR-10のデフォルト
-    "use_mixup": False,       # Mixupを使うかスイッチ
-    "mixup_alpha": 1.0,      # 混ぜ具合のパラメータ（1.0が標準）
-    "mixup_epochs": 0,      # 「最初の40エポックだけ」Mixupする（残りの10は普通に学習）
+    "resize": 32,
+    "use_mixup": False,  # 今回はOFF
+    "mixup_alpha": 1.0,
+    "mixup_epochs": 0,
 }
 
-
-
+# --- 2. シード固定関数 ---
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -42,14 +45,8 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-set_seed(config.seed)
-
-
-
-# --- 6. 学習・評価関数の定義 ---
-
-
-def train_one_epoch(epoch, model, loader, optimizer, criterion, device, config): # configを受け取るように変更
+# --- 3. 学習関数 ---
+def train_one_epoch(epoch, model, loader, optimizer, criterion, device, config):
     model.train()
     sum_loss = 0.0
     correct = 0
@@ -60,40 +57,24 @@ def train_one_epoch(epoch, model, loader, optimizer, criterion, device, config):
 
         optimizer.zero_grad()
 
-        # === Mixup の判定 ===
-        # 設定がON、かつ 指定エポック以内なら Mixup を実行
+        # Mixup (今回はOFF設定ですがロジックは残しておきます)
         if config.use_mixup and epoch <= config.mixup_epochs:
-
-            # 1. Beta分布から混ぜる比率 (lambda) を決める
-            # alpha=1.0 なら 0~1 の間で均等に選ばれる
             lam = np.random.beta(config.mixup_alpha, config.mixup_alpha)
-
-            # 2. バッチ内の画像をシャッフルするためのインデックスを作る
             batch_size = images.size(0)
             index = torch.randperm(batch_size).to(device)
-
-            # 3. 画像を混ぜる！ ( mixed_x = λx + (1-λ)x_shuffle )
             mixed_images = lam * images + (1 - lam) * images[index]
-
-            # 4. モデルに通す
             outputs = model(mixed_images)
-
-            # 5. Lossを混ぜる！ ( Loss = λ * Loss(y1) + (1-λ) * Loss(y2) )
-            # ラベル自体を混ぜるのではなく、それぞれの正解に対するLossを計算して混ぜます
             loss = lam * criterion(outputs, labels) + (1 - lam) * criterion(outputs, labels[index])
-
+            mode = "Mixup"
         else:
-            # === 通常学習 (後半エポック または Mixup OFF時) ===
             outputs = model(images)
             loss = criterion(outputs, labels)
+            mode = "Normal"
 
-        # --- 以下は共通 ---
         loss.backward()
         optimizer.step()
 
         sum_loss += loss.item()
-
-        # 精度の計算（Mixup中は正確な正解率が出ないので、主ラベルで近似計算）
         _, predicted = outputs.max(1)
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
@@ -102,26 +83,22 @@ def train_one_epoch(epoch, model, loader, optimizer, criterion, device, config):
     acc = correct / total
     current_lr = optimizer.param_groups[0]['lr']
 
-    # ログ表示（Mixup中かどうか分かるようにする）
-    mode = "Mixup" if (config.use_mixup and epoch <= config.mixup_epochs) else "Normal"
     print(f"[Train] Epoch {epoch} ({mode}): Loss={avg_loss:.4f}, Acc={acc:.4f}, LR={current_lr:.6f}")
-
+    
     wandb.log({
         "epoch": epoch,
         "train/loss": avg_loss,
         "train/accuracy": acc,
         "train/learning_rate": current_lr,
-        "mixup_mode": 1 if mode == "Mixup" else 0 # グラフで切り替わりが見えるように
+        "mixup_mode": 1 if mode == "Mixup" else 0
     })
 
-
-
-def evaluate(epoch, model, loader, criterion, device, log_results=True):
+# --- 4. 評価関数 (通常) ---
+def evaluate(epoch, model, loader, criterion, device, config, classes, log_results=True):
     model.eval()
     sum_loss = 0.0
     all_preds = []
     all_labels = []
-    # 誤分類画像を保存するためのリスト
     misclassified_images = []
     misclassified_preds = []
     misclassified_labels = []
@@ -130,34 +107,27 @@ def evaluate(epoch, model, loader, criterion, device, log_results=True):
         for images, labels in loader:
             images_dev = images.to(device)
             labels_dev = labels.to(device)
-
             outputs = model(images_dev)
             loss = criterion(outputs, labels_dev)
             sum_loss += loss.item()
-
             _, predicted = outputs.max(1)
 
-            # データをCPUに戻してリストに追加
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-            # ---  誤分類サンプルの収集 ---
+            # 誤分類収集
             if len(misclassified_images) < 32:
                 mask = predicted != labels_dev
                 if mask.any():
-                    # 修正: images（CPU）ではなく images_dev（GPU）を使う
-                    # GPU同士で計算してから .cpu() で戻すことでエラーを回避
                     wrong_imgs = images_dev[mask].cpu()
                     wrong_preds = predicted[mask].cpu()
                     wrong_labels = labels_dev[mask].cpu()
-
                     for img, p, l in zip(wrong_imgs, wrong_preds, wrong_labels):
                         if len(misclassified_images) < 32:
                             misclassified_images.append(img)
                             misclassified_preds.append(p.item())
                             misclassified_labels.append(l.item())
 
-    # 指標計算
     avg_loss = sum_loss / len(loader)
     acc = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
@@ -175,37 +145,31 @@ def evaluate(epoch, model, loader, criterion, device, log_results=True):
             "val/recall": recall,
             "val/f1_score": f1,
         }
-
-        # 最終エポックのみ詳細なアーティファクトを記録
+        
+        # 最終エポックのみ画像ログなどを送信
         if epoch == config.epochs:
             # 1. 混同行列
             log_dict["val/confusion_matrix"] = wandb.plot.confusion_matrix(
-                probs=None,
-                y_true=all_labels,
-                preds=all_preds,
-                class_names=classes
+                probs=None, y_true=all_labels, preds=all_preds, class_names=classes
             )
-
-            # 2. 誤分類サンプルの画像記録
+            # 2. 誤分類サンプル (逆正規化して表示)
+            mean = torch.tensor((0.4914, 0.4822, 0.4465)).view(3, 1, 1)
+            std = torch.tensor((0.2023, 0.1994, 0.2010)).view(3, 1, 1)
             wandb_images = []
             for img, p, l in zip(misclassified_images, misclassified_preds, misclassified_labels):
+                img = img * std + mean # Un-normalize
                 img = torch.clamp(img, 0, 1)
                 caption = f"True: {classes[l]} / Pred: {classes[p]}"
                 wandb_images.append(wandb.Image(img, caption=caption))
-
+            
             log_dict["val/misclassified_examples"] = wandb_images
 
         wandb.log(log_dict)
-
     return acc
 
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-# --- 詳細指標対応版 TTA評価関数 ---
+# --- 5. TTA評価関数 ---
 def evaluate_with_tta(model, loader, device):
     model.eval()
-    
-    # 全データの予測と正解を貯めるリスト
     all_preds = []
     all_labels = []
     
@@ -216,26 +180,22 @@ def evaluate_with_tta(model, loader, device):
             images = images.to(device)
             labels = labels.to(device)
 
-            # 1. そのまま予測
+            # 1. Original
             outputs1 = model(images)
             probs1 = F.softmax(outputs1, dim=1)
 
-            # 2. 左右反転して予測
+            # 2. Flipped
             images_flipped = torch.flip(images, dims=[3])
             outputs2 = model(images_flipped)
             probs2 = F.softmax(outputs2, dim=1)
 
-            # 3. アンサンブル (平均)
+            # Average
             avg_probs = (probs1 + probs2) / 2.0
-            
-            # 予測ラベルを取得
             _, predicted = torch.max(avg_probs.data, 1)
             
-            # リストに追加 (CPUに戻してnumpy化)
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    # --- 指標の計算 (Macro平均) ---
     acc = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
     recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
@@ -243,21 +203,91 @@ def evaluate_with_tta(model, loader, device):
 
     print(f"--------------------------------------------------")
     print(f"✅ TTA Result:")
-    print(f"   Accuracy : {acc:.4f}")
+    print(f"   Accuracy : {acc:.4f} ({acc*100:.2f}%)")
     print(f"   F1 Score : {f1:.4f}")
-    print(f"   Precision: {precision:.4f}")
-    print(f"   Recall   : {recall:.4f}")
     print(f"--------------------------------------------------")
     
-    # W&Bに記録 (通常のvalと区別するために tta/ をつける)
     wandb.log({
         "test/tta_accuracy": acc,
         "test/tta_precision": precision,
         "test/tta_recall": recall,
         "test/tta_f1_score": f1
     })
-    
     return acc
 
+# --- 6. メイン実行部 ---
+def main():
+    # Setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # W&B Init
+    wandb.init(
+        project=hyperparameters["project_name"],
+        name=hyperparameters["experiment_name"],
+        config=hyperparameters
+    )
+    config = wandb.config # config.seed のようにアクセス可能にする
+    
+    set_seed(config.seed)
+    
+    # Data Augmentation (RandomErasingを追加！)
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.TrivialAugmentWide(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.RandomErasing(p=0.5), # 実験名に合わせて追加しました
+    ])
 
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    # Dataset & Loader
+    train_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+    test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+    
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=config.batch_size, shuffle=True, num_workers=2)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=config.batch_size, shuffle=False, num_workers=2)
+    
+    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+    # Model Setup
+    model = get_model(device) # model.pyから取得
+    criterion = nn.CrossEntropyLoss()
+    
+    # Optimizer (AdamW)
+    optimizer = optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay
+    )
+    
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
+
+    # Training Loop
+    print("Training Started...")
+    start_time = time.time()
+
+    for epoch in range(1, config.epochs + 1):
+        train_one_epoch(epoch, model, train_loader, optimizer, criterion, device, config)
+        evaluate(epoch, model, test_loader, criterion, device, config, classes)
+        scheduler.step()
+
+    print(f"Total Training Time: {time.time() - start_time:.2f}s")
+
+    # Save & TTA
+    save_path = "best.pt"
+    torch.save(model.state_dict(), save_path)
+    
+    # モデルをロードし直してTTA評価
+    model.load_state_dict(torch.load(save_path))
+    evaluate_with_tta(model, test_loader, device)
+
+    wandb.finish()
+
+if __name__ == "__main__":
+    main()
 
