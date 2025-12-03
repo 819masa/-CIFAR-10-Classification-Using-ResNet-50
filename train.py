@@ -19,7 +19,7 @@ from model import get_model
 hyperparameters = {
     "project_name": "clasification of cifar-10 by ResNet50",
     "experiment_name": "ResNet50_Stem_TrivialAug_AdamW_50ep_TTA_RE", 
-    "note": "AdamW (lr=0.001, wd=1e-2). Modified Stem + TrivialAugment + RandomErasing. No Mixup.",
+    "note": "AdamW (lr=0.001, wd=1e-2). Modified Stem + TrivialAugment + . No Mixup.",
     "architecture": "ResNet50_CIFAR_Optimized",
     "dataset": "CIFAR-10",
     "epochs": 50,
@@ -237,7 +237,7 @@ def main():
         transforms.TrivialAugmentWide(),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        transforms.RandomErasing(p=0.5), # 実験名に合わせて追加しました
+        #transforms.RandomErasing(p=0.5),
     ])
 
     transform_test = transforms.Compose([
