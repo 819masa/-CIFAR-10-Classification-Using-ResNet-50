@@ -3,6 +3,9 @@
 ResNet50をCIFAR-10用に最適化し、TrivialAugmentとMixup、AdamWを用いた高精度な画像分類モデルです。
 最終的な精度は **94.24%** (TTA適用時) を達成しています。
 
+## 成果物紹介資料
+https://docs.google.com/presentation/d/1eCVKDGO4K4cOONah8OyigFc6Ji6w3Q-JsrtsLzt1SNQ/edit?usp=sharing
+
 ## 📂 ファイル構成
 
 - `model.py`: モデル定義 (CIFAR-10用にStemを改造したResNet50)
