@@ -17,6 +17,7 @@ Python 3.8以上を推奨します。
 ```bash
 # ライブラリのインストール
 pip install -r requirements.txt
+py -m pip install torch torchvision torchaudio
 ```
 
 Weights & Biases (W&B) を使用するため、初回のみログインが必要です。
